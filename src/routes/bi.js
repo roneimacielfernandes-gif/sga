@@ -184,17 +184,38 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
     // Reaproveita o dashboard inteiro e filtra no backend por produtor/data/modulo
     const bi = {
       receitas: 0, despesas: 0, saldosMutuo: {}, sociosConfig: {},
-      recentes: [], raioXFrota: [], numParticipantes: 0, socioAnalisado: 'Consolidado Geral'
+      recentes: [], raioXFrota: [], numParticipantes: 0, socioAnalisado: 'Consolidado Geral',
+      cotaPercentual: 1.0, rateioSocios: []
     };
 
     const participantes = await pool.query('SELECT * FROM participantes');
     bi.numParticipantes = participantes.rows.length;
+    let somaParticipacao = 0;
     participantes.rows.forEach(p => {
+      const frac = parseFloat(p.participacao) || 0;
+      somaParticipacao += frac;
       bi.sociosConfig[p.nome] = {
         nome: p.nome, ie: p.ie, fazenda: p.fazenda || 'Sem Fazenda',
-        participacao: parseFloat(p.participacao) || 0
+        participacao: frac
       };
     });
+    // Se a soma das participações não bater 1.0, normaliza proporcionalmente
+    bi.somaParticipacao = somaParticipacao > 0 ? somaParticipacao : 1;
+
+    // Determina o percentual da cota do sócio analisado
+    // Se socio = "Todos"/Consolidado, cota = 100% (mostra valor cheio)
+    // Se socio = nome específico, cota = participacao daquele sócio (ex: 0.50 = 50%)
+    let cotaFrac = 1.0;
+    if (socio && socio !== 'Todos') {
+      const part = participantes.rows.find(p =>
+        String(p.nome).toLowerCase().includes(String(socio).toLowerCase())
+      );
+      if (part) {
+        cotaFrac = parseFloat(part.participacao) || (participantes.rows.length > 0 ? 1 / participantes.rows.length : 1);
+      }
+    }
+    bi.cotaPercentual = cotaFrac; // fração (0.5 = 50%)
+    bi.socioAnalisado = (socio && socio !== 'Todos') ? socio : 'Consolidado Geral (Holding)';
 
     const fmtQ = (d) => d ? new Date(d).toISOString().split('T')[0] : null;
     const ini = fmtQ(dataInicio);
@@ -222,10 +243,12 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
     }
 
     // Coleta de todos os lançamentos (igual ao dashboard, mas só para relatório)
+    // Cada item inclui: valor (cheio), cota (valor × cotaPercentual do sócio analisado)
+
     const fat = await pool.query('SELECT * FROM entregas_faturamento');
     fat.rows.forEach(r => {
       const v = parseFloat(r.valor_total) || 0;
-      const item = { data: fmt(r.data), modulo: 'Fat. Grãos', desc: `Faturamento Contrato ${r.contrato}: ${r.peso_bruto} scs`, valor: v, tipo: 'Receita', produtor: r.produtor, parceiro: r.destino };
+      const item = { data: fmt(r.data), modulo: 'Fat. Grãos', desc: `Faturamento Contrato ${r.contrato}: ${r.peso_bruto} scs`, valor: v, cota: v * cotaFrac, tipo: 'Receita', produtor: r.produtor, parceiro: r.destino, safra: 'Soja 25/26' };
       if (dentroData(r.data) && dentroFiltro(item)) { bi.recentes.push(item); bi.receitas += v; }
     });
 
@@ -236,14 +259,15 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       const ehReceita = evento.includes('venda'); // tudo que contém "venda" = receita
       const tipo = ehReceita ? 'Receita' : 'Despesa';
       const acao = ehReceita ? 'Venda' : (evento.includes('compra') ? 'Compra' : 'Vacinação');
-      const item = { data: fmt(r.data), modulo: 'Pecuária', desc: `${acao} de ${r.qtd} Cab. de ${r.categoria || 'Gado'}`, valor: v, tipo, produtor: r.produtor, parceiro: r.parceiro };
+      const parceiro = r.parceiro || (ehReceita ? 'Comprador' : 'Fornecedor');
+      const item = { data: fmt(r.data), modulo: 'Pecuária', desc: `${acao} de ${r.qtd} Cab. de ${r.categoria || 'Gado'}`, valor: v, cota: v * cotaFrac, tipo, produtor: r.produtor, parceiro, safra: 'Giro Pecuária' };
       if (dentroData(r.data) && dentroFiltro(item)) { bi.recentes.push(item); if (ehReceita) bi.receitas += v; else bi.despesas += v; }
     });
 
     const lav = await pool.query('SELECT * FROM reg_lavoura');
     lav.rows.forEach(r => {
       const v = parseFloat(r.custo_total) || 0;
-      const item = { data: fmt(r.data), modulo: 'Lavoura', desc: `LAVOURA: ${r.atividade} - ${r.insumo || ''}`, valor: v, tipo: 'Despesa', produtor: r.produtor, parceiro: 'Interno' };
+      const item = { data: fmt(r.data), modulo: 'Lavoura', desc: `LAVOURA: ${r.atividade} - ${r.insumo || ''}`, valor: v, cota: v * cotaFrac, tipo: 'Despesa', produtor: r.produtor, parceiro: 'Interno', safra: r.safra || 'Anual/Geral' };
       if (dentroData(r.data) && dentroFiltro(item)) { bi.recentes.push(item); bi.despesas += v; }
     });
 
@@ -264,34 +288,37 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       else frotaMap[chave].outros += v;
       frotaMap[chave].total += v;
 
-      const item = { data: fmt(r.data), modulo: 'Ativos', desc: `[${r.id_maquina}] ${r.tipo_custo}: ${r.descricao}`, valor: v, tipo: 'Despesa', produtor: r.produtor, parceiro: 'Oficina', categoriaCusto: r.tipo_custo, safra: 'Anual/Geral' };
+      const item = { data: fmt(r.data), modulo: 'Ativos', desc: `[${r.id_maquina}] ${r.tipo_custo}: ${r.descricao}`, valor: v, cota: v * cotaFrac, tipo: 'Despesa', produtor: r.produtor, parceiro: 'Oficina', categoriaCusto: r.tipo_custo, safra: 'Anual/Geral' };
       if (dentroData(r.data) && dentroFiltro(item)) { bi.recentes.push(item); bi.despesas += v; }
     });
 
     const fin = await pool.query('SELECT * FROM lan_financiamentos_seguros');
     fin.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
-      const item = { data: fmt(r.data), modulo: 'Ativos', desc: `${String(r.categoria || '').toUpperCase()} Banco: ${r.banco_credor}`, valor: v, tipo: 'Despesa', produtor: r.produtor, parceiro: r.banco_credor, categoriaCusto: r.categoria, safra: 'Anual/Geral' };
+      const item = { data: fmt(r.data), modulo: 'Ativos', desc: `${String(r.categoria || '').toUpperCase()} Banco: ${r.banco_credor}`, valor: v, cota: v * cotaFrac, tipo: 'Despesa', produtor: r.produtor, parceiro: r.banco_credor, categoriaCusto: r.categoria, safra: 'Anual/Geral' };
       if (dentroData(r.data) && dentroFiltro(item)) { bi.recentes.push(item); bi.despesas += v; }
     });
 
+    // Mútuo entre sócios — aparece na auditoria com credor/devedor
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
-      const item = { data: fmt(r.data), modulo: 'Mútuo', desc: 'MÚTUO: Repasse entre sócios', valor: v, tipo: 'Mútuo', produtor: r.socio_credor, parceiro: r.socio_devedor, safra: 'Anual/Geral' };
+      const credor = r.socio_credor || '—';
+      const devedor = r.socio_devedor || '—';
+      const statusMutuo = r.status || 'Pendente';
+      const item = {
+        data: fmt(r.data), modulo: 'Mútuo',
+        desc: `MÚTUO: Repasse ${credor} → ${devedor} (${statusMutuo})`,
+        valor: v, cota: v, // mútuo não rateia — é o valor real do repasse
+        tipo: 'Mútuo', produtor: credor, parceiro: devedor, safra: 'Anual/Geral'
+      };
       if (dentroData(r.data) && dentroFiltro(item)) { bi.recentes.push(item); }
     });
 
     // Raio-X de Frota: converte o mapa em array ordenado por total decrescente
     bi.raioXFrota = Object.values(frotaMap).sort((a, b) => b.total - a.total);
     bi.custoTotalFrota = bi.raioXFrota.reduce((s, f) => s + f.total, 0);
-
-    // Determina sócio analisado (se filtro socio != Todos, usa o nome; senão Consolidado)
-    if (socio && socio !== 'Todos') {
-      bi.socioAnalisado = socio;
-    } else {
-      bi.socioAnalisado = 'Consolidado Geral (Holding)';
-    }
+    bi.cotaFrota = bi.custoTotalFrota * cotaFrac;
 
     bi.recentes.sort((a, b) => {
       const [da, ma, ya] = a.data.split('/');
@@ -300,6 +327,24 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
     });
 
     bi.saldo = bi.receitas - bi.despesas;
+    bi.cotaReceitas = bi.receitas * cotaFrac;
+    bi.cotaDespesas = bi.despesas * cotaFrac;
+    bi.cotaSaldo = bi.saldo * cotaFrac;
+
+    // Rateio entre sócios: divide receitas e despesas pela participação de cada um
+    bi.rateioSocios = participantes.rows.map(p => {
+      const frac = parseFloat(p.participacao) || 0;
+      const pctNormalizado = somaParticipacao > 0 ? (frac / somaParticipacao) : 0;
+      return {
+        nome: p.nome,
+        participacao: frac,
+        pct: pctNormalizado, // fração normalizada (soma = 1.0)
+        receitaCota: bi.receitas * pctNormalizado,
+        despesaCota: bi.despesas * pctNormalizado,
+        saldoCota: bi.saldo * pctNormalizado
+      };
+    });
+
     bi.filtros = { socio: socio || 'Todos', dataInicio: ini || 'Início', dataFim: fim || 'Fim', modulo: modulo || 'Todos', ie: ie || 'Todas', fazenda: fazenda || 'Todas' };
     bi.geradoEm = new Date().toLocaleString('pt-BR');
 
