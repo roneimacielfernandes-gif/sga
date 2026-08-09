@@ -169,7 +169,7 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
         if (bi.saldosMutuo[r.socio_devedor] !== undefined) bi.saldosMutuo[r.socio_devedor] -= v;
       }
       bi.recentes.push({
-        data: fmt(r.data), modulo: 'Mútuo', desc: `MÚTUO: Repasse ${r.socio_credor} → ${r.socio_devedor}`,
+        data: fmt(r.data), modulo: 'Mútuo', desc: `MÚTUO: Repasse de ${r.socio_credor} para ${r.socio_devedor}`,
         valor: v, tipo: 'Mútuo', produtor: r.socio_credor, safra: 'Anual/Geral', parceiro: r.socio_devedor
       });
     });
@@ -543,7 +543,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Mútuo entre sócios (REGRA DEFINITIVA: COTA ZERO NO CONSOLIDADO GERAL) ===
+    // === Mútuo entre sócios (REGRA CORRIGIDA: TEXTO CLARO E COTA ZERO NO CONSOLIDADO) ===
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -556,12 +556,12 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       let formulaStr = 'Repasse Inter-Sócios (0%)';
       let tipoMutuo = 'Mútuo';
       let descFinal = '';
-      let cotaMutuo = 0; // No Consolidado Geral (Holding) a cota atribuída é rigorosamente ZERO
+      let cotaMutuo = 0;
 
       if (isDevolucao) {
-        descFinal = `MÚTUO: Devolução/Liquidação ${devedor} → ${credor} (${statusMutuo})`;
+        descFinal = `MÚTUO: Devolução de ${devedor} para ${credor} (${statusMutuo})`;
       } else {
-        descFinal = `MÚTUO: Empréstimo Concedido ${credor} → ${devedor} (${statusMutuo})`;
+        descFinal = `MÚTUO: Empréstimo de ${credor} para ${devedor} (${statusMutuo})`;
       }
 
       if (socio && socio !== 'Todos') {
@@ -573,10 +573,16 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
           tipoMutuo = isDevolucao ? 'Receita' : 'Despesa';
           formulaStr = 'Individual (100%)';
           cotaMutuo = v;
+          descFinal = isDevolucao 
+            ? `MÚTUO: Devolução Recebida de ${devedor} (${statusMutuo})`
+            : `MÚTUO: Empréstimo Concedido para ${devedor} (${statusMutuo})`;
         } else if (isDevedor) {
           tipoMutuo = isDevolucao ? 'Despesa' : 'Receita';
           formulaStr = 'Individual (100%)';
           cotaMutuo = v;
+          descFinal = isDevolucao 
+            ? `MÚTUO: Devolução Paga para ${credor} (${statusMutuo})`
+            : `MÚTUO: Empréstimo Recebido de ${credor} (${statusMutuo})`;
         } else {
           formulaStr = 'Sem Vínculo (0%)';
           cotaMutuo = 0;
@@ -591,8 +597,8 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       const item = {
         data: fmt(r.data), modulo: 'Mútuo',
         desc: descFinal,
-        valor: v,           // Valor Planilha: R$ 25.000,00
-        cota: cotaMutuo,    // Sua Cota R$: R$ 0,00 no Consolidado!
+        valor: v,
+        cota: cotaMutuo,
         formula: formulaStr,
         tipo: tipoMutuo, produtor: credor, parceiro: devedor, safra: 'Anual/Geral'
       };
