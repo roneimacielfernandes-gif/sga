@@ -169,7 +169,7 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
         if (bi.saldosMutuo[r.socio_devedor] !== undefined) bi.saldosMutuo[r.socio_devedor] -= v;
       }
       bi.recentes.push({
-        data: fmt(r.data), modulo: 'Mútuo', desc: `MÚTUO: Repasse de ${r.socio_credor} para ${r.socio_devedor}`,
+        data: fmt(r.data), modulo: 'Mútuo', desc: `MÚTUO: Repasse ${r.socio_credor} → ${r.socio_devedor}`,
         valor: v, tipo: 'Mútuo', produtor: r.socio_credor, safra: 'Anual/Geral', parceiro: r.socio_devedor
       });
     });
@@ -281,13 +281,13 @@ function calcularRateioLancamento(produtorStr, valor, sociosConfig, socioAnalisa
   return { quota, formulaStr, valorSocio, cotaSocioAnalisado };
 }
 
-// GET /api/bi/relatorio-pdf
+// GET /api/bi/relatorio-pdf (ESTRUTURA OFICIAL DO MODELO PDF 5)
 router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
   try {
     const { socio, dataInicio, dataFim, modulo, ie, fazenda } = req.query;
     const bi = {
       receitas: 0, despesas: 0, saldosMutuo: {}, sociosConfig: {},
-      recentes: [], raioXFrota: [], numParticipantes: 0, socioAnalisado: 'Consolidado Geral',
+      recentes: [], mutuos: [], raioXFrota: [], numParticipantes: 0, socioAnalisado: 'Consolidado Geral',
       cotaPercentual: 1.0, rateioSocios: []
     };
 
@@ -301,6 +301,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
         nome: p.nome, ie: p.ie, fazenda: p.fazenda || 'Sem Fazenda',
         quota: frac, participacao: frac
       };
+      bi.saldosMutuo[p.nome] = 0;
     });
     bi.somaParticipacao = somaParticipacao > 0 ? somaParticipacao : 1;
 
@@ -339,14 +340,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
         const sStr = String(socio).toLowerCase();
         if (!pStr.includes(sStr) && !sStr.includes(pStr)) {
           if (!pStr.match(/\b(geral|todos|holding)\b/)) {
-            if (r.modulo === 'Mútuo' && r.parceiro) {
-              const parcStr = String(r.parceiro).toLowerCase();
-              if (!parcStr.includes(sStr) && !sStr.includes(parcStr)) {
-                return false;
-              }
-            } else {
-              return false;
-            }
+            return false;
           }
         }
       }
@@ -543,68 +537,34 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Mútuo entre sócios (REGRA CORRIGIDA: TEXTO CLARO E COTA ZERO NO CONSOLIDADO) ===
+    // === MÚTUO SEPARADO EM TABELA EXCLUSIVA (ESTRUTURA MODELO PDF 5) ===
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
       const credor = r.socio_credor || '—';
       const devedor = r.socio_devedor || '—';
       const statusMutuo = r.status || 'Pendente';
-      const descMutuo = r.desc || r.descricao || '';
-      const isDevolucao = descMutuo.toLowerCase().includes('devolu') || descMutuo.toLowerCase().includes('reembolso') || statusMutuo.toLowerCase().includes('liquida');
+      const descMutuo = r.desc || r.descricao || 'Repasse entre sócios';
 
-      let formulaStr = 'Repasse Inter-Sócios (0%)';
-      let tipoMutuo = 'Mútuo';
-      let descFinal = '';
-      let cotaMutuo = 0;
-
-      if (isDevolucao) {
-        descFinal = `MÚTUO: Devolução de ${devedor} para ${credor} (${statusMutuo})`;
-      } else {
-        descFinal = `MÚTUO: Empréstimo de ${credor} para ${devedor} (${statusMutuo})`;
+      // Atualiza os saldos mutuos do quadro
+      if (statusMutuo.toLowerCase() === 'pendente') {
+        if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
+        if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
       }
 
-      if (socio && socio !== 'Todos') {
-        const socioNorm = String(socio).toLowerCase();
-        const isCredor = String(credor).toLowerCase().includes(socioNorm) || socioNorm.includes(String(credor).toLowerCase());
-        const isDevedor = String(devedor).toLowerCase().includes(socioNorm) || socioNorm.includes(String(devedor).toLowerCase());
-
-        if (isCredor) {
-          tipoMutuo = isDevolucao ? 'Receita' : 'Despesa';
-          formulaStr = 'Individual (100%)';
-          cotaMutuo = v;
-          descFinal = isDevolucao 
-            ? `MÚTUO: Devolução Recebida de ${devedor} (${statusMutuo})`
-            : `MÚTUO: Empréstimo Concedido para ${devedor} (${statusMutuo})`;
-        } else if (isDevedor) {
-          tipoMutuo = isDevolucao ? 'Despesa' : 'Receita';
-          formulaStr = 'Individual (100%)';
-          cotaMutuo = v;
-          descFinal = isDevolucao 
-            ? `MÚTUO: Devolução Paga para ${credor} (${statusMutuo})`
-            : `MÚTUO: Empréstimo Recebido de ${credor} (${statusMutuo})`;
-        } else {
-          formulaStr = 'Sem Vínculo (0%)';
-          cotaMutuo = 0;
-          tipoMutuo = 'Mútuo';
-        }
-      } else {
-        formulaStr = 'Repasse Inter-Sócios (0%)';
-        tipoMutuo = 'Mútuo';
-        cotaMutuo = 0;
-      }
-
-      const item = {
-        data: fmt(r.data), modulo: 'Mútuo',
-        desc: descFinal,
+      const mutuoItem = {
+        data: fmt(r.data),
+        credor: credor,
+        devedor: devedor,
+        desc: descMutuo,
         valor: v,
-        cota: cotaMutuo,
-        formula: formulaStr,
-        tipo: tipoMutuo, produtor: credor, parceiro: devedor, safra: 'Anual/Geral'
+        status: statusMutuo
       };
 
-      if (dentroData(r.data) && dentroFiltro(item)) {
-        bi.recentes.push(item);
+      if (dentroData(r.data)) {
+        if (!socio || socio === 'Todos' || credor.toLowerCase().includes(socio.toLowerCase()) || devedor.toLowerCase().includes(socio.toLowerCase())) {
+          bi.mutuos.push(mutuoItem);
+        }
       }
     });
 
