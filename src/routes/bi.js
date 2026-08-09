@@ -166,9 +166,16 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       const v = parseFloat(r.valor) || 0;
       const credor = r.socio_credor;
       const devedor = r.socio_devedor;
+      const descLower = String(r.desc || r.descricao || '').toLowerCase();
+      const isDevolucao = descLower.includes('devolu') || descLower.includes('reembolso') || descLower.includes('pago') || descLower.includes('pagamento');
 
-      if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
-      if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
+      if (isDevolucao) {
+        if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
+        if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
+      } else {
+        if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
+        if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
+      }
 
       bi.recentes.push({
         data: fmt(r.data), modulo: 'Mútuo',
@@ -540,7 +547,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === MÚTUO PROCESSAMENTO DE CONTA CORRENTE COM SALDOS LÍQUIDOS ===
+    // === MÚTUO - CÁLCULO DE SALDOS PENDENTES COM ABATIMENTO DE DEVOLUÇÃO ===
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -549,14 +556,19 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       const statusMutuo = r.status || 'Pendente';
       const descMutuo = r.desc || r.descricao || 'Repasse entre sócios';
       const descLower = descMutuo.toLowerCase();
-      const isDevolucao = descLower.includes('devolu') || descLower.includes('reembolso') || descLower.includes('pago') || descLower.includes('pagamento') || statusMutuo.toLowerCase().includes('liquida');
+      const statusLower = statusMutuo.toLowerCase();
+      const isDevolucao = descLower.includes('devolu') || descLower.includes('reembolso') || descLower.includes('pago') || descLower.includes('pagamento') || statusLower.includes('liquida');
+
+      // Abatimento exato: devoluções subtraem da dívida acumulada do credor/devedor original
+      if (bi.saldosMutuo[credor] === undefined) bi.saldosMutuo[credor] = 0;
+      if (bi.saldosMutuo[devedor] === undefined) bi.saldosMutuo[devedor] = 0;
 
       if (isDevolucao) {
-        if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] -= v;
-        if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] += v;
+        bi.saldosMutuo[credor] -= v;  // Quem estava a receber, teve o crédito quitado em -v
+        bi.saldosMutuo[devedor] += v; // Quem devia, teve o débito reduzido em +v (aproxima do 0)
       } else {
-        if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
-        if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
+        bi.saldosMutuo[credor] += v;  // Empréstimo novo: aumenta o valor a receber do credor (+v)
+        bi.saldosMutuo[devedor] -= v; // Empréstimo novo: aumenta a dívida a pagar do devedor (-v)
       }
 
       const mutuoItem = {
