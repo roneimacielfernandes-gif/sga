@@ -114,6 +114,20 @@ const TABLES = {
       inicioPart: 'inicio', vencimentoPart: 'vencimento', valorPart: 'valor',
       statusPart: 'status', fazendaPart: 'fazenda'
     }
+  },
+  Gestao_Maquinario: {
+    tabela: 'maquinario',
+    chavePrimaria: 'id_maquina', // chave primária é TEXT (não SERIAL id)
+    campos: {
+      idMaquina: 'id_maquina', modeloMaquina: 'modelo', horimetroMaquina: 'horimetro',
+      ultimaManutMaquina: 'ultima_manutencao', proximaRevisaoMaquina: 'proxima_revisao',
+      dieselMaquina: 'diesel', oficinaMaquina: 'oficina',
+      bancoFinancMaquina: 'banco_financiamento', parcelaFinancMaquina: 'parcela_financiamento',
+      qtdParcelasFinancMaquina: 'qtd_parcelas_financiamento', vencFinancMaquina: 'venc_financiamento',
+      seguradoraMaquina: 'seguradora', seguroMaquina: 'seguro',
+      formaPgtoSeguroMaquina: 'forma_pgto_seguro', qtdParcelasSeguroMaquina: 'qtd_parcelas_seguro',
+      vencSeguroMaquina: 'venc_seguro', statusMaquina: 'status'
+    }
   }
 };
 
