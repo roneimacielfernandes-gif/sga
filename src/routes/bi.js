@@ -42,12 +42,12 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       });
     });
 
-    // Pecuária — Compra/Vacinação = DESPESA, Venda = RECEITA (correção do bug)
+    // Pecuária — Compra/Vacinação = DESPESA, Venda = RECEITA
     const pec = await pool.query('SELECT * FROM reg_pecuaria');
     pec.rows.forEach(r => {
       const v = parseFloat(r.valor_total) || 0;
       const evento = String(r.evento || '').toLowerCase().trim();
-      const ehReceita = evento.includes('venda'); // tudo que contém "venda" = receita; compra/vacinação = despesa
+      const ehReceita = evento.includes('venda');
       const mes = new Date(r.data).getMonth();
       const tipo = ehReceita ? 'Receita' : 'Despesa';
       if (ehReceita) {
@@ -57,7 +57,7 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
         bi.despesas += v;
         bi.fluxoMensalDespesas[mes] += v;
       }
-      const acao = ehReceita ? 'Venda' : (evento === 'compra' ? 'Compra' : 'Vacinação');
+      const acao = ehReceita ? 'Venda' : (evento.includes('compra') ? 'Compra' : 'Vacinação');
       bi.recentes.push({
         data: fmt(r.data), modulo: 'Pecuária',
         desc: `${acao} de ${r.qtd} Cab. de ${r.categoria || 'Gado'}`,
@@ -171,7 +171,7 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       });
     });
 
-    // Mútuo entre sócios
+    // Mútuo entre sócios (Cálculo de saldos)
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -180,7 +180,7 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
         if (bi.saldosMutuo[r.socio_devedor] !== undefined) bi.saldosMutuo[r.socio_devedor] -= v;
       }
       bi.recentes.push({
-        data: fmt(r.data), modulo: 'Mútuo', desc: 'MÚTUO: Repasse entre sócios',
+        data: fmt(r.data), modulo: 'Mútuo', desc: `MÚTUO: Repasse ${r.socio_credor} → ${r.socio_devedor}`,
         valor: v, tipo: 'Mútuo', produtor: r.socio_credor, safra: 'Anual/Geral', parceiro: r.socio_devedor
       });
     });
@@ -234,22 +234,6 @@ router.get('/cadastrais', exigirLogin, async (req, res) => {
   }
 });
 
-/**
- * Mapeamento de nomes de módulo para o filtro.
- * O dropdown moduloRelatorio usa valores como "Compra", "Vendas", "Fin/Seg", "Pessoal", "Manutenção".
- * Esta função garante que o filtro compara o nome corretamente.
- */
-const MODULOS_RELATORIO = [
-  'Fat. Grãos', 'Pecuária', 'Lavoura', 'Compra', 'Vendas',
-  'Fin/Seg', 'Ativos', 'Pessoal', 'Manutenção', 'Mútuo'
-];
-
-/**
- * obterSociosVinculados (replica do código original do Google Sheets)
- * Determina quais sócios estão vinculados a um lançamento.
- * Se o produtor contém "geral|todos|holding" => TODOS os sócios (compartilhado por quota)
- * Caso contrário => apenas os sócios cujo nome casa (individual 100%)
- */
 function obterSociosVinculados(produtorStr, sociosConfig) {
   let socios = [];
   if (!sociosConfig) return socios;
@@ -266,24 +250,15 @@ function obterSociosVinculados(produtorStr, sociosConfig) {
   return socios;
 }
 
-/**
- * Calcula a fórmula de rateio e a cota do sócio analisado para um lançamento.
- * Retorna { quota, formulaStr, valorSocio }
- *  - quota: fração aplicada (soma das quotas dos sócios vinculados, ou 1.0 se individual)
- *  - formulaStr: texto descritivo "Compartilhado (...)" ou "Individual (100%)"
- *  - valorSocio: valor × quota
- */
 function calcularRateioLancamento(produtorStr, valor, sociosConfig, socioAnalisadoNome) {
   const sociosAtivos = obterSociosVinculados(produtorStr, sociosConfig);
   let quota = 0;
   let formulaStr = '';
 
   if (sociosAtivos.length === 0) {
-    // Nenhum sócio vinculado encontrado — trata como individual 100%
     quota = 1.0;
     formulaStr = 'Individual (100%)';
   } else if (String(produtorStr || '').toLowerCase().match(/\b(geral|todos|holding)\b/)) {
-    // Compartilhado: soma as quotas de todos os sócios ativos
     sociosAtivos.forEach(s => { quota += (s.quota || s.participacao || 0); });
     formulaStr = `Compartilhado (${sociosAtivos.map(s => {
       const nomeCurto = s.nome.split(' ')[1] || s.nome;
@@ -291,30 +266,24 @@ function calcularRateioLancamento(produtorStr, valor, sociosConfig, socioAnalisa
       return `${nomeCurto}: ${pct}%`;
     }).join(' + ')})`;
   } else {
-    // Individual: o sócio vinculado assume 100%
     quota = 1.0;
     formulaStr = 'Individual (100%)';
   }
 
-  // Cota do sócio analisado: se for "Todos"/Consolidado, usa a quota total (soma dos vinculados)
-  // Se for um sócio específico, usa apenas a quota daquele sócio dentro dos vinculados
   let cotaSocioAnalisado = 0;
   if (!socioAnalisadoNome || socioAnalisadoNome === 'Todos') {
-    cotaSocioAnalisado = quota; // consolidado = valor cheio do rateio
+    cotaSocioAnalisado = quota;
   } else {
-    // Procura o sócio analisado entre os vinculados
     const socioEncontrado = sociosAtivos.find(s =>
       String(s.nome).toLowerCase().includes(String(socioAnalisadoNome).toLowerCase()) ||
       String(socioAnalisadoNome).toLowerCase().includes(String(s.nome).toLowerCase())
     );
     if (socioEncontrado) {
       cotaSocioAnalisado = socioEncontrado.quota || socioEncontrado.participacao || 0;
-      // Se for individual (não compartilhado), o sócio assume 100% mesmo que sua quota seja menor
       if (!String(produtorStr || '').toLowerCase().match(/\b(geral|todos|holding)\b/)) {
         cotaSocioAnalisado = 1.0;
       }
     } else {
-      // Sócio analisado não está entre os vinculados — cota zero
       cotaSocioAnalisado = 0;
     }
   }
@@ -323,8 +292,7 @@ function calcularRateioLancamento(produtorStr, valor, sociosConfig, socioAnalisa
   return { quota, formulaStr, valorSocio, cotaSocioAnalisado };
 }
 
-// GET /api/bi/relatorio-pdf?socio=&dataInicio=&dataFim=&modulo=&ie=&fazenda=
-// Retorna os dados filtrados em JSON para o frontend montar o PDF (HTML→Chromium→PDF).
+// GET /api/bi/relatorio-pdf
 router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
   try {
     const { socio, dataInicio, dataFim, modulo, ie, fazenda } = req.query;
@@ -334,7 +302,6 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       cotaPercentual: 1.0, rateioSocios: []
     };
 
-    // Carrega sócios/participantes
     const participantes = await pool.query('SELECT * FROM participantes');
     bi.numParticipantes = participantes.rows.length;
     let somaParticipacao = 0;
@@ -348,7 +315,6 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
     });
     bi.somaParticipacao = somaParticipacao > 0 ? somaParticipacao : 1;
 
-    // Determina o sócio analisado e sua cota percentual (para o resumo no topo)
     let cotaFrac = 1.0;
     if (socio && socio !== 'Todos') {
       const part = participantes.rows.find(p =>
@@ -365,7 +331,6 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
     const ini = fmtQ(dataInicio);
     const fim = fmtQ(dataFim);
 
-    // Mapeamento de alias de módulo para comparação flexível no filtro
     const MODULO_ALIASES = {
       'fat. grãos': ['fat. grãos', 'faturamento'],
       'compra': ['compra', 'compra de insumos'],
@@ -380,14 +345,14 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
     };
 
     function dentroFiltro(r) {
-      // Filtro por produtor (sócio)
       if (socio && socio !== 'Todos' && r.produtor && !String(r.produtor).toLowerCase().includes(String(socio).toLowerCase())) {
-        // Exceção: se o produtor for "geral/todos/holding", passa no filtro (é compartilhado)
         if (!String(r.produtor).toLowerCase().match(/\b(geral|todos|holding)\b/)) {
-          return false;
+          // Permite passar se for o devedor do mútuo
+          if (r.modulo !== 'Mútuo' && r.parceiro && !String(r.parceiro).toLowerCase().includes(String(socio).toLowerCase())) {
+            return false;
+          }
         }
       }
-      // Filtro por módulo (com alias flexível)
       if (modulo && modulo !== 'Todos' && r.modulo) {
         const modNorm = String(modulo).toLowerCase().trim();
         const rModNorm = String(r.modulo).toLowerCase().trim();
@@ -407,11 +372,6 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       return true;
     }
 
-    /**
-     * Helper: cria um item de lançamento com fórmula de rateio calculada.
-     * Cada item tem: data, modulo, desc, valor (planilha cheio), cota (do sócio analisado),
-     * formula (string do rateio), tipo, produtor, parceiro, safra.
-     */
     function criarItem(dados) {
       const valor = parseFloat(dados.valor) || 0;
       const { formulaStr, valorSocio } = calcularRateioLancamento(
@@ -421,9 +381,9 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
         data: dados.data,
         modulo: dados.modulo,
         desc: dados.desc,
-        valor: valor,           // Valor Planilha (cheio)
-        cota: valorSocio,       // Sua Cota R$ (proporcional ao sócio analisado)
-        formula: formulaStr,    // "Compartilhado (...)" ou "Individual (100%)"
+        valor: valor,
+        cota: valorSocio,
+        formula: formulaStr,
         tipo: dados.tipo,
         produtor: dados.produtor,
         parceiro: dados.parceiro,
@@ -431,7 +391,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       };
     }
 
-    // === Faturamento (Fat. Grãos) — Receita ===
+    // === Faturamento ===
     const fat = await pool.query('SELECT * FROM entregas_faturamento');
     fat.rows.forEach(r => {
       const v = parseFloat(r.valor_total) || 0;
@@ -446,7 +406,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Pecuária — Venda=Receita, Compra/Vacinação=Despesa ===
+    // === Pecuária ===
     const pec = await pool.query('SELECT * FROM reg_pecuaria');
     pec.rows.forEach(r => {
       const v = parseFloat(r.valor_total) || 0;
@@ -466,7 +426,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Lavoura — Despesa ===
+    // === Lavoura ===
     const lav = await pool.query('SELECT * FROM reg_lavoura');
     lav.rows.forEach(r => {
       const v = parseFloat(r.custo_total) || 0;
@@ -481,7 +441,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Compra de Insumos — Despesa ===
+    // === Compra ===
     const comp = await pool.query('SELECT * FROM contratos_compra_insumos');
     comp.rows.forEach(r => {
       const v = (parseFloat(r.qtd) || 0) * (parseFloat(r.valor_unitario) || 0);
@@ -496,7 +456,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Vendas / Contratos de Venda — Receita ===
+    // === Vendas ===
     const vend = await pool.query('SELECT * FROM contratos_venda_lavoura');
     vend.rows.forEach(r => {
       const v = (parseFloat(r.volume) || 0) * (parseFloat(r.preco) || 0);
@@ -511,7 +471,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Ativos / Máquinas — Despesa (Raio-X Frota) ===
+    // === Ativos ===
     const maq = await pool.query('SELECT * FROM reg_financas_maquinas');
     const frotaMap = {};
     maq.rows.forEach(r => {
@@ -539,7 +499,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Fin/Seg — Financiamentos e Seguros — Despesa (módulo SEPARADO de Ativos) ===
+    // === Fin/Seg ===
     const fin = await pool.query('SELECT * FROM lan_financiamentos_seguros');
     fin.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -554,7 +514,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Pessoal — Despesa ===
+    // === Pessoal ===
     const pes = await pool.query('SELECT * FROM gestao_pessoal');
     pes.rows.forEach(r => {
       const v = (parseFloat(r.salario) || 0) > 0
@@ -571,7 +531,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Manutenção / Conservação — Despesa ===
+    // === Manutenção ===
     const manut = await pool.query('SELECT * FROM manut_conservacao');
     manut.rows.forEach(r => {
       const v = (parseFloat(r.custo_material) || 0) + (parseFloat(r.custo_mao_obra) || 0);
@@ -586,17 +546,17 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Mútuo entre sócios — aparece na auditoria com credor→devedor ===
+    // === Mútuo entre sócios (Regra Corrigida Dinâmica) ===
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
       const credor = r.socio_credor || '—';
       const devedor = r.socio_devedor || '—';
       const statusMutuo = r.status || 'Pendente';
-      // Para mútuo, vinculamos tanto o credor quanto o devedor
-      // O produtor é o credor (quem emprestou); o parceiro é o devedor (quem recebeu)
+      const descMutuo = r.desc || r.descricao || '';
+      const isDevolucao = descMutuo.toLowerCase().includes('devolu') || descMutuo.toLowerCase().includes('reembolso') || statusMutuo.toLowerCase().includes('liquida');
+
       const sociosAtivos = obterSociosVinculados(credor, bi.sociosConfig);
-      // Também tenta vincular o devedor
       const sociosDevedor = obterSociosVinculados(devedor, bi.sociosConfig);
       const todosVinculados = [...sociosAtivos, ...sociosDevedor.filter(d => !sociosAtivos.find(s => s.nome === d.nome))];
 
@@ -611,29 +571,46 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
         formulaStr = 'Individual (100%)';
       }
 
-      // Cota do sócio analisado no mútuo
-      let cotaMutuo = v; // padrão: valor cheio
+      let tipoMutuo = 'Despesa';
+      let descFinal = `MÚTUO: Repasse ${credor} → ${devedor} (${statusMutuo})`;
+      let cotaMutuo = v;
+
       if (socio && socio !== 'Todos') {
-        const socioEncontrado = todosVinculados.find(s =>
-          String(s.nome).toLowerCase().includes(String(socio).toLowerCase()) ||
-          String(socio).toLowerCase().includes(String(s.nome).toLowerCase())
-        );
-        cotaMutuo = socioEncontrado ? v : 0;
+        const socioNorm = String(socio).toLowerCase();
+        const isCredor = String(credor).toLowerCase().includes(socioNorm) || socioNorm.includes(String(credor).toLowerCase());
+        const isDevedor = String(devedor).toLowerCase().includes(socioNorm) || socioNorm.includes(String(devedor).toLowerCase());
+
+        if (isCredor) {
+          tipoMutuo = isDevolucao ? 'Receita' : 'Despesa';
+          descFinal = isDevolucao
+            ? `MÚTUO: Devolução Recebida de ${devedor} (${statusMutuo})`
+            : `MÚTUO: Empréstimo Concedido para ${devedor} (${statusMutuo})`;
+          cotaMutuo = v;
+        } else if (isDevedor) {
+          tipoMutuo = isDevolucao ? 'Despesa' : 'Receita';
+          descFinal = isDevolucao
+            ? `MÚTUO: Devolução Paga para ${credor} (${statusMutuo})`
+            : `MÚTUO: Empréstimo Recebido de ${credor} (${statusMutuo})`;
+          cotaMutuo = v;
+        } else {
+          cotaMutuo = 0;
+        }
+      } else {
+        tipoMutuo = isDevolucao ? 'Receita' : 'Despesa';
       }
 
       const item = {
         data: fmt(r.data), modulo: 'Mútuo',
-        desc: `MÚTUO: Repasse ${credor} → ${devedor} (${statusMutuo})`,
+        desc: descFinal,
         valor: v, cota: cotaMutuo,
         formula: formulaStr,
-        tipo: 'Mútuo', produtor: credor, parceiro: devedor, safra: 'Anual/Geral'
+        tipo: tipoMutuo, produtor: credor, parceiro: devedor, safra: 'Anual/Geral'
       };
       if (dentroData(r.data) && dentroFiltro(item)) {
         bi.recentes.push(item);
       }
     });
 
-    // Raio-X de Frota: converte o mapa em array ordenado por total decrescente
     bi.raioXFrota = Object.values(frotaMap).sort((a, b) => b.total - a.total);
     bi.custoTotalFrota = bi.raioXFrota.reduce((s, f) => s + f.total, 0);
     bi.cotaFrota = bi.custoTotalFrota * cotaFrac;
@@ -649,7 +626,6 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
     bi.cotaDespesas = bi.despesas * cotaFrac;
     bi.cotaSaldo = bi.saldo * cotaFrac;
 
-    // Rateio entre sócios: divide receitas e despesas pela participação de cada um
     bi.rateioSocios = participantes.rows.map(p => {
       const frac = parseFloat(p.participacao) || 0;
       const pctNormalizado = somaParticipacao > 0 ? (frac / somaParticipacao) : 0;
@@ -673,7 +649,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
   }
 });
 
-// DELETE /api/bi/limpar-base  -> zera todas as tabelas operacionais (SÓ ADMIN)
+// DELETE /api/bi/limpar-base
 router.delete('/limpar-base', exigirLogin, async (req, res) => {
   if (req.usuario.nivel !== 'Admin') {
     return res.status(403).json({ sucesso: false, mensagem: 'Acesso negado. Apenas Administradores podem limpar a base de dados.' });
