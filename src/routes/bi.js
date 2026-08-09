@@ -166,16 +166,10 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       const v = parseFloat(r.valor) || 0;
       const credor = r.socio_credor;
       const devedor = r.socio_devedor;
-      const descLower = String(r.desc || r.descricao || '').toLowerCase();
-      const isDevolucao = descLower.includes('devolu') || descLower.includes('reembolso') || descLower.includes('pago') || descLower.includes('pagamento');
 
-      if (isDevolucao) {
-        if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
-        if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
-      } else {
-        if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
-        if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
-      }
+      // Lógica Contábil Direta: Quem paga (credor) soma (+v), quem recebe (devedor) subtrai (-v)
+      if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
+      if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
 
       bi.recentes.push({
         data: fmt(r.data), modulo: 'Mútuo',
@@ -461,15 +455,14 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
     const vend = await pool.query('SELECT * FROM contratos_venda_lavoura');
     vend.rows.forEach(r => {
       const v = (parseFloat(r.volume) || 0) * (parseFloat(r.preco) || 0);
-      const item = criarItem({
+      bi.receitas += v;
+      const mes = r.data_pagamento ? new Date(r.data_pagamento).getMonth() : new Date().getMonth();
+      bi.fluxoMensalReceitas[mes] += v;
+      bi.recentes.push({
         data: fmt(r.data_pagamento || r.data_inicio_entrega), modulo: 'Vendas',
         desc: `Venda Contrato ${r.contrato}: ${r.volume} sc de ${r.cultura || 'Grão'}`,
         valor: v, tipo: 'Receita', produtor: r.produtor, parceiro: r.comprador, safra: r.safra || 'Soja 25/26'
       });
-      if (dentroData(r.data_pagamento || r.data_inicio_entrega) && dentroFiltro(item)) {
-        bi.recentes.push(item);
-        bi.receitas += v;
-      }
     });
 
     // === Ativos ===
@@ -547,7 +540,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === MÚTUO - CÁLCULO DE SALDOS PENDENTES COM ABATIMENTO DE DEVOLUÇÃO ===
+    // === MÚTUO - CONTA CORRENTE COM ABATIMENTO EXATO DE DEVOLUÇÕES ===
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -559,17 +552,13 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       const statusLower = statusMutuo.toLowerCase();
       const isDevolucao = descLower.includes('devolu') || descLower.includes('reembolso') || descLower.includes('pago') || descLower.includes('pagamento') || statusLower.includes('liquida');
 
-      // Abatimento exato: devoluções subtraem da dívida acumulada do credor/devedor original
+      // Lógica Contábil Direta para saldos:
+      // Qualquer valor transferido pelo Credor adiciona no seu crédito (+v) e diminui no débito do Devedor (-v)
       if (bi.saldosMutuo[credor] === undefined) bi.saldosMutuo[credor] = 0;
       if (bi.saldosMutuo[devedor] === undefined) bi.saldosMutuo[devedor] = 0;
 
-      if (isDevolucao) {
-        bi.saldosMutuo[credor] -= v;  // Quem estava a receber, teve o crédito quitado em -v
-        bi.saldosMutuo[devedor] += v; // Quem devia, teve o débito reduzido em +v (aproxima do 0)
-      } else {
-        bi.saldosMutuo[credor] += v;  // Empréstimo novo: aumenta o valor a receber do credor (+v)
-        bi.saldosMutuo[devedor] -= v; // Empréstimo novo: aumenta a dívida a pagar do devedor (-v)
-      }
+      bi.saldosMutuo[credor] += v;
+      bi.saldosMutuo[devedor] -= v;
 
       const mutuoItem = {
         data: fmt(r.data),
