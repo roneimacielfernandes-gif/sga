@@ -20,14 +20,16 @@ router.get('/:tabela', exigirLogin, async (req, res) => {
   if (!cfg) return;
 
   try {
+    // Se a tabela tem chave primária própria, ordena por ela; senão por id
+    const ordem = cfg.chavePrimaria || 'id';
     const { rows } = await pool.query(
-      `SELECT * FROM ${cfg.tabela} ORDER BY id DESC LIMIT 500`
+      `SELECT * FROM ${cfg.tabela} ORDER BY ${ordem} DESC LIMIT 500`
     );
-    // Monta um "rótulo" legível pra cada linha, como fazia obterRegistrosParaEdicao
+    // Monta um "rótulo" legível pra cada linha
     const colunasLabel = Object.values(cfg.campos).slice(0, 3);
     const resultado = rows.map(r => ({
-      id: String(r.id),
-      label: `📝 ID ${r.id} - ${colunasLabel.map(c => r[c]).filter(Boolean).join(' / ')}`
+      id: String(r[ordem]),
+      label: `📝 ID ${r[ordem]} - ${colunasLabel.map(c => r[c]).filter(Boolean).join(' / ')}`
     }));
     res.json(resultado);
   } catch (e) {
@@ -42,7 +44,8 @@ router.get('/:tabela/:id', exigirLogin, async (req, res) => {
   if (!cfg) return;
 
   try {
-    const { rows } = await pool.query(`SELECT * FROM ${cfg.tabela} WHERE id = $1`, [req.params.id]);
+    const ordem = cfg.chavePrimaria || 'id';
+    const { rows } = await pool.query(`SELECT * FROM ${cfg.tabela} WHERE ${ordem} = $1`, [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ erroSGA: 'Registro não encontrado.' });
 
     const linha = rows[0];
@@ -99,6 +102,21 @@ router.post('/', exigirLogin, async (req, res) => {
       if (resultado.rows.length === 0) {
         return res.status(404).json({ sucesso: false, mensagem: 'Erro: ID não localizado.' });
       }
+    } else if (cfg.chavePrimaria) {
+      // Tabela com chave primária própria (ex: maquinario usa id_maquina TEXT)
+      // Faz UPSERT (INSERT ... ON CONFLICT UPDATE) para não duplicar
+      const pkCol = cfg.chavePrimaria;
+      if (colunas.indexOf(pkCol) === -1) {
+        colunas.push(pkCol);
+        valores.push('MAQ-' + Date.now());
+        placeholders.push(`$${i++}`);
+      }
+      const updateCols = colunas.filter(c => c !== pkCol);
+      const updateSets = updateCols.map(c => `${c} = EXCLUDED.${c}`).join(', ');
+      resultado = await pool.query(
+        `INSERT INTO ${cfg.tabela} (${colunas.join(', ')}) VALUES (${placeholders.join(', ')}) ON CONFLICT (${pkCol}) DO UPDATE SET ${updateSets} RETURNING ${pkCol} as id`,
+        valores
+      );
     } else {
       resultado = await pool.query(
         `INSERT INTO ${cfg.tabela} (${colunas.join(', ')}) VALUES (${placeholders.join(', ')}) RETURNING id`,
