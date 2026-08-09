@@ -42,17 +42,26 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       });
     });
 
-    // Pecuária (receita)
+    // Pecuária — Compra/Vacinação = DESPESA, Venda = RECEITA (correção do bug)
     const pec = await pool.query('SELECT * FROM reg_pecuaria');
     pec.rows.forEach(r => {
       const v = parseFloat(r.valor_total) || 0;
-      bi.receitas += v;
+      const evento = String(r.evento || '').toLowerCase().trim();
+      const ehReceita = evento === 'venda'; // só Venda é receita; Compra/Vacinação = despesa
       const mes = new Date(r.data).getMonth();
-      bi.fluxoMensalReceitas[mes] += v;
+      const tipo = ehReceita ? 'Receita' : 'Despesa';
+      if (ehReceita) {
+        bi.receitas += v;
+        bi.fluxoMensalReceitas[mes] += v;
+      } else {
+        bi.despesas += v;
+        bi.fluxoMensalDespesas[mes] += v;
+      }
+      const acao = ehReceita ? 'Venda' : (evento === 'compra' ? 'Compra' : 'Vacinação');
       bi.recentes.push({
         data: fmt(r.data), modulo: 'Pecuária',
-        desc: `Venda de ${r.qtd} Cab. de ${r.categoria || 'Gado'}`,
-        valor: v, tipo: 'Receita', produtor: r.produtor, parceiro: r.parceiro, safra: 'Giro Pecuária'
+        desc: `${acao} de ${r.qtd} Cab. de ${r.categoria || 'Gado'}`,
+        valor: v, tipo, produtor: r.produtor, parceiro: r.parceiro, safra: 'Giro Pecuária'
       });
     });
 
