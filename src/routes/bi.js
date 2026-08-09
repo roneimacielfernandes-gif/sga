@@ -184,12 +184,16 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
     // Reaproveita o dashboard inteiro e filtra no backend por produtor/data/modulo
     const bi = {
       receitas: 0, despesas: 0, saldosMutuo: {}, sociosConfig: {},
-      recentes: []
+      recentes: [], raioXFrota: [], numParticipantes: 0, socioAnalisado: 'Consolidado Geral'
     };
 
     const participantes = await pool.query('SELECT * FROM participantes');
+    bi.numParticipantes = participantes.rows.length;
     participantes.rows.forEach(p => {
-      bi.sociosConfig[p.nome] = { nome: p.nome, ie: p.ie, fazenda: p.fazenda || 'Sem Fazenda' };
+      bi.sociosConfig[p.nome] = {
+        nome: p.nome, ie: p.ie, fazenda: p.fazenda || 'Sem Fazenda',
+        participacao: parseFloat(p.participacao) || 0
+      };
     });
 
     const fmtQ = (d) => d ? new Date(d).toISOString().split('T')[0] : null;
@@ -244,25 +248,50 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
     });
 
     const maq = await pool.query('SELECT * FROM reg_financas_maquinas');
+    // Mapa para Raio-X de Frota: agrupa por id_maquina/modelo e tipo_custo
+    const frotaMap = {};
     maq.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
-      const item = { data: fmt(r.data), modulo: 'Ativos', desc: `[${r.id_maquina}] ${r.tipo_custo}: ${r.descricao}`, valor: v, tipo: 'Despesa', produtor: r.produtor, parceiro: 'Oficina' };
+      if (!dentroData(r.data)) return;
+      const chave = String(r.id_maquina || r.modelo || 'A CLASSIFICAR').toUpperCase().trim();
+      if (!frotaMap[chave]) {
+        frotaMap[chave] = { maquina: chave, combustivel: 0, pecas: 0, ipva: 0, outros: 0, total: 0 };
+      }
+      const tc = String(r.tipo_custo || '').toLowerCase();
+      if (tc.includes('combust') || tc.includes('diesel')) frotaMap[chave].combustivel += v;
+      else if (tc.includes('peca') || tc.includes('serv') || tc.includes('oficina') || tc.includes('manut')) frotaMap[chave].pecas += v;
+      else if (tc.includes('ipva') || tc.includes('taxa') || tc.includes('imposto')) frotaMap[chave].ipva += v;
+      else frotaMap[chave].outros += v;
+      frotaMap[chave].total += v;
+
+      const item = { data: fmt(r.data), modulo: 'Ativos', desc: `[${r.id_maquina}] ${r.tipo_custo}: ${r.descricao}`, valor: v, tipo: 'Despesa', produtor: r.produtor, parceiro: 'Oficina', categoriaCusto: r.tipo_custo, safra: 'Anual/Geral' };
       if (dentroData(r.data) && dentroFiltro(item)) { bi.recentes.push(item); bi.despesas += v; }
     });
 
     const fin = await pool.query('SELECT * FROM lan_financiamentos_seguros');
     fin.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
-      const item = { data: fmt(r.data), modulo: 'Ativos', desc: `${String(r.categoria || '').toUpperCase()} Banco: ${r.banco_credor}`, valor: v, tipo: 'Despesa', produtor: r.produtor, parceiro: r.banco_credor };
+      const item = { data: fmt(r.data), modulo: 'Ativos', desc: `${String(r.categoria || '').toUpperCase()} Banco: ${r.banco_credor}`, valor: v, tipo: 'Despesa', produtor: r.produtor, parceiro: r.banco_credor, categoriaCusto: r.categoria, safra: 'Anual/Geral' };
       if (dentroData(r.data) && dentroFiltro(item)) { bi.recentes.push(item); bi.despesas += v; }
     });
 
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
-      const item = { data: fmt(r.data), modulo: 'Mútuo', desc: 'MÚTUO: Repasse entre sócios', valor: v, tipo: 'Mútuo', produtor: r.socio_credor, parceiro: r.socio_devedor };
+      const item = { data: fmt(r.data), modulo: 'Mútuo', desc: 'MÚTUO: Repasse entre sócios', valor: v, tipo: 'Mútuo', produtor: r.socio_credor, parceiro: r.socio_devedor, safra: 'Anual/Geral' };
       if (dentroData(r.data) && dentroFiltro(item)) { bi.recentes.push(item); }
     });
+
+    // Raio-X de Frota: converte o mapa em array ordenado por total decrescente
+    bi.raioXFrota = Object.values(frotaMap).sort((a, b) => b.total - a.total);
+    bi.custoTotalFrota = bi.raioXFrota.reduce((s, f) => s + f.total, 0);
+
+    // Determina sócio analisado (se filtro socio != Todos, usa o nome; senão Consolidado)
+    if (socio && socio !== 'Todos') {
+      bi.socioAnalisado = socio;
+    } else {
+      bi.socioAnalisado = 'Consolidado Geral (Holding)';
+    }
 
     bi.recentes.sort((a, b) => {
       const [da, ma, ya] = a.data.split('/');
