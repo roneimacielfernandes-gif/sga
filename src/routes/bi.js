@@ -164,24 +164,16 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
-      const statusP = String(r.status || '').toLowerCase();
-      const descP = String(r.desc || r.descricao || '').toLowerCase();
-      const isDevolucao = descP.includes('devolu') || descP.includes('reembolso') || descP.includes('pago') || statusP.includes('liquida');
+      const credor = r.socio_credor;
+      const devedor = r.socio_devedor;
 
-      if (statusP.includes('pendente') || isDevolucao) {
-        if (isDevolucao) {
-          if (bi.saldosMutuo[r.socio_credor] !== undefined) bi.saldosMutuo[r.socio_credor] -= v;
-          if (bi.saldosMutuo[r.socio_devedor] !== undefined) bi.saldosMutuo[r.socio_devedor] += v;
-        } else {
-          if (bi.saldosMutuo[r.socio_credor] !== undefined) bi.saldosMutuo[r.socio_credor] += v;
-          if (bi.saldosMutuo[r.socio_devedor] !== undefined) bi.saldosMutuo[r.socio_devedor] -= v;
-        }
-      }
+      if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
+      if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
 
       bi.recentes.push({
         data: fmt(r.data), modulo: 'Mútuo',
-        desc: `MÚTUO: ${isDevolucao ? 'Devolução' : 'Empréstimo'} de ${r.socio_credor} para ${r.socio_devedor}`,
-        valor: v, tipo: 'Mútuo', produtor: r.socio_credor, safra: 'Anual/Geral', parceiro: r.socio_devedor
+        desc: `MÚTUO: Repasse de ${credor} para ${devedor}`,
+        valor: v, tipo: 'Mútuo', produtor: credor, safra: 'Anual/Geral', parceiro: devedor
       });
     });
 
@@ -548,7 +540,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === MÚTUO PROCESSAMENTO DE CONTA CORRENTE COM SALDOS LÍQUIDOS ===
+    // === MÚTUO PROCESSAMENTO DE CONTA CORRENTE COM SALDOS LÍQUIDOS (REGRA DEFINITIVA) ===
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -559,14 +551,10 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       const descLower = descMutuo.toLowerCase();
       const isDevolucao = descLower.includes('devolu') || descLower.includes('reembolso') || descLower.includes('pago') || descLower.includes('pagamento') || statusMutuo.toLowerCase().includes('liquida');
 
-      // Atualiza o saldo pendente do Mútuo levando em conta pagamentos/devoluções
-      if (isDevolucao) {
-        if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] -= v;
-        if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] += v;
-      } else {
-        if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
-        if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
-      }
+      // Atualiza o saldo pendente do Mútuo no Quadro Informativo:
+      // Quem paga (credor) aumenta o crédito (+v), quem recebe (devedor) aumenta o débito (-v)
+      if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
+      if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
 
       const mutuoItem = {
         data: fmt(r.data),
