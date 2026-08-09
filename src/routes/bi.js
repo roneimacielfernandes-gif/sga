@@ -9,7 +9,7 @@ function fmt(d) {
   return new Date(d).toISOString().split('T')[0].split('-').reverse().join('/');
 }
 
-// GET /api/bi/dashboard -> equivalente a obterDadosBIReais()
+// GET /api/bi/dashboard
 router.get('/dashboard', exigirLogin, async (req, res) => {
   try {
     const bi = {
@@ -18,7 +18,6 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       recentes: [], financasSaldos: { pago: 0, pendente: 0 }, financasCronograma: []
     };
 
-    // Sócios/participantes
     const participantes = await pool.query('SELECT * FROM participantes');
     participantes.rows.forEach(p => {
       bi.sociosConfig[p.nome] = {
@@ -28,7 +27,6 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       bi.saldosMutuo[p.nome] = 0;
     });
 
-    // Faturamento (receita)
     const fat = await pool.query('SELECT * FROM entregas_faturamento');
     fat.rows.forEach(r => {
       const v = parseFloat(r.valor_total) || 0;
@@ -42,7 +40,6 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       });
     });
 
-    // Pecuária — Compra/Vacinação = DESPESA, Venda = RECEITA
     const pec = await pool.query('SELECT * FROM reg_pecuaria');
     pec.rows.forEach(r => {
       const v = parseFloat(r.valor_total) || 0;
@@ -65,7 +62,6 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       });
     });
 
-    // Lavoura (despesa)
     const lav = await pool.query('SELECT * FROM reg_lavoura');
     lav.rows.forEach(r => {
       const v = parseFloat(r.custo_total) || 0;
@@ -79,7 +75,6 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       });
     });
 
-    // Ativos / máquinas (despesa)
     const maq = await pool.query('SELECT * FROM reg_financas_maquinas');
     maq.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -94,7 +89,6 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       });
     });
 
-    // Financiamentos e seguros (despesa + cronograma)
     const fin = await pool.query('SELECT * FROM lan_financiamentos_seguros');
     fin.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -113,7 +107,6 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       });
     });
 
-    // Compra de insumos (despesa)
     const comp = await pool.query('SELECT * FROM contratos_compra_insumos');
     comp.rows.forEach(r => {
       const v = (parseFloat(r.qtd) || 0) * (parseFloat(r.valor_unitario) || 0);
@@ -127,7 +120,6 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       });
     });
 
-    // Vendas / contratos de venda de lavoura (receita)
     const vend = await pool.query('SELECT * FROM contratos_venda_lavoura');
     vend.rows.forEach(r => {
       const v = (parseFloat(r.volume) || 0) * (parseFloat(r.preco) || 0);
@@ -141,7 +133,6 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       });
     });
 
-    // Pessoal (despesa)
     const pes = await pool.query('SELECT * FROM gestao_pessoal');
     pes.rows.forEach(r => {
       const v = (parseFloat(r.salario) || 0) > 0
@@ -157,7 +148,6 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       });
     });
 
-    // Manutenção / conservação (despesa)
     const manut = await pool.query('SELECT * FROM manut_conservacao');
     manut.rows.forEach(r => {
       const v = (parseFloat(r.custo_material) || 0) + (parseFloat(r.custo_mao_obra) || 0);
@@ -171,7 +161,6 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       });
     });
 
-    // Mútuo entre sócios (Cálculo de saldos)
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -198,7 +187,7 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
   }
 });
 
-// GET /api/bi/cadastrais -> equivalente a obterDadosCadastrais()
+// GET /api/bi/cadastrais
 router.get('/cadastrais', exigirLogin, async (req, res) => {
   try {
     const resultado = { talhoes: [], culturas: [], tiposInsumo: [], categoriasGado: [], fornecedores: [], produtores: [], maquinas: [], ies: [], fazendas: [], bancos: [] };
@@ -347,7 +336,6 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
     function dentroFiltro(r) {
       if (socio && socio !== 'Todos' && r.produtor && !String(r.produtor).toLowerCase().includes(String(socio).toLowerCase())) {
         if (!String(r.produtor).toLowerCase().match(/\b(geral|todos|holding)\b/)) {
-          // Permite passar se for o devedor do mútuo
           if (r.modulo !== 'Mútuo' && r.parceiro && !String(r.parceiro).toLowerCase().includes(String(socio).toLowerCase())) {
             return false;
           }
@@ -546,7 +534,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Mútuo entre sócios (Regra Corrigida Dinâmica) ===
+    // === Mútuo entre sócios (Regra Corrigida: Consolidado Neutro) ===
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -571,7 +559,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
         formulaStr = 'Individual (100%)';
       }
 
-      let tipoMutuo = 'Despesa';
+      let tipoMutuo = 'Mútuo';
       let descFinal = `MÚTUO: Repasse ${credor} → ${devedor} (${statusMutuo})`;
       let cotaMutuo = v;
 
@@ -594,9 +582,12 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
           cotaMutuo = v;
         } else {
           cotaMutuo = 0;
+          tipoMutuo = 'Mútuo';
         }
       } else {
-        tipoMutuo = isDevolucao ? 'Receita' : 'Despesa';
+        tipoMutuo = 'Mútuo';
+        descFinal = `MÚTUO: Repasse ${credor} → ${devedor} (${statusMutuo})`;
+        cotaMutuo = v;
       }
 
       const item = {
@@ -606,8 +597,10 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
         formula: formulaStr,
         tipo: tipoMutuo, produtor: credor, parceiro: devedor, safra: 'Anual/Geral'
       };
+
       if (dentroData(r.data) && dentroFiltro(item)) {
         bi.recentes.push(item);
+        // O mútuo entra na auditoria visual, mas NÃO afeta as despesas operacionais da Holding/Consolidado!
       }
     });
 
