@@ -164,12 +164,23 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
-      if (String(r.status).toLowerCase() === 'pendente') {
-        if (bi.saldosMutuo[r.socio_credor] !== undefined) bi.saldosMutuo[r.socio_credor] += v;
-        if (bi.saldosMutuo[r.socio_devedor] !== undefined) bi.saldosMutuo[r.socio_devedor] -= v;
+      const statusP = String(r.status || '').toLowerCase();
+      const descP = String(r.desc || r.descricao || '').toLowerCase();
+      const isDevolucao = descP.includes('devolu') || descP.includes('reembolso') || descP.includes('pago') || statusP.includes('liquida');
+
+      if (statusP.includes('pendente') || isDevolucao) {
+        if (isDevolucao) {
+          if (bi.saldosMutuo[r.socio_credor] !== undefined) bi.saldosMutuo[r.socio_credor] -= v;
+          if (bi.saldosMutuo[r.socio_devedor] !== undefined) bi.saldosMutuo[r.socio_devedor] += v;
+        } else {
+          if (bi.saldosMutuo[r.socio_credor] !== undefined) bi.saldosMutuo[r.socio_credor] += v;
+          if (bi.saldosMutuo[r.socio_devedor] !== undefined) bi.saldosMutuo[r.socio_devedor] -= v;
+        }
       }
+
       bi.recentes.push({
-        data: fmt(r.data), modulo: 'Mútuo', desc: `MÚTUO: Repasse ${r.socio_credor} → ${r.socio_devedor}`,
+        data: fmt(r.data), modulo: 'Mútuo',
+        desc: `MÚTUO: ${isDevolucao ? 'Devolução' : 'Empréstimo'} de ${r.socio_credor} para ${r.socio_devedor}`,
         valor: v, tipo: 'Mútuo', produtor: r.socio_credor, safra: 'Anual/Geral', parceiro: r.socio_devedor
       });
     });
@@ -281,7 +292,7 @@ function calcularRateioLancamento(produtorStr, valor, sociosConfig, socioAnalisa
   return { quota, formulaStr, valorSocio, cotaSocioAnalisado };
 }
 
-// GET /api/bi/relatorio-pdf (ESTRUTURA OFICIAL DO MODELO PDF 5)
+// GET /api/bi/relatorio-pdf
 router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
   try {
     const { socio, dataInicio, dataFim, modulo, ie, fazenda } = req.query;
@@ -537,7 +548,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === MÚTUO SEPARADO EM TABELA EXCLUSIVA (ESTRUTURA MODELO PDF 5) ===
+    // === MÚTUO PROCESSAMENTO DE CONTA CORRENTE COM SALDOS LÍQUIDOS ===
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -545,9 +556,14 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       const devedor = r.socio_devedor || '—';
       const statusMutuo = r.status || 'Pendente';
       const descMutuo = r.desc || r.descricao || 'Repasse entre sócios';
+      const descLower = descMutuo.toLowerCase();
+      const isDevolucao = descLower.includes('devolu') || descLower.includes('reembolso') || descLower.includes('pago') || descLower.includes('pagamento') || statusMutuo.toLowerCase().includes('liquida');
 
-      // Atualiza os saldos mutuos do quadro
-      if (statusMutuo.toLowerCase() === 'pendente') {
+      // Atualiza o saldo pendente do Mútuo levando em conta pagamentos/devoluções
+      if (isDevolucao) {
+        if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] -= v;
+        if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] += v;
+      } else {
         if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
         if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
       }
@@ -558,12 +574,52 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
         devedor: devedor,
         desc: descMutuo,
         valor: v,
-        status: statusMutuo
+        status: statusMutuo,
+        isDevolucao: isDevolucao
       };
 
       if (dentroData(r.data)) {
         if (!socio || socio === 'Todos' || credor.toLowerCase().includes(socio.toLowerCase()) || devedor.toLowerCase().includes(socio.toLowerCase())) {
           bi.mutuos.push(mutuoItem);
+        }
+      }
+
+      // Se o relatório for INDIVIDUAL do sócio, insere no caixa como Entrada (Receita) ou Saída (Despesa)
+      if (socio && socio !== 'Todos') {
+        const socioNorm = String(socio).toLowerCase();
+        const isCredor = credor.toLowerCase().includes(socioNorm) || socioNorm.includes(credor.toLowerCase());
+        const isDevedor = devedor.toLowerCase().includes(socioNorm) || socioNorm.includes(devedor.toLowerCase());
+
+        if (isCredor || isDevedor) {
+          let tipoCaixa = 'Mútuo';
+          let descCaixa = '';
+
+          if (isCredor) {
+            tipoCaixa = isDevolucao ? 'Receita' : 'Despesa';
+            descCaixa = isDevolucao ? `MÚTUO: Devolução Recebida de ${devedor}` : `MÚTUO: Empréstimo Concedido para ${devedor}`;
+          } else if (isDevedor) {
+            tipoCaixa = isDevolucao ? 'Despesa' : 'Receita';
+            descCaixa = isDevolucao ? `MÚTUO: Devolução Paga para ${credor}` : `MÚTUO: Empréstimo Recebido de ${credor}`;
+          }
+
+          const itemCaixa = {
+            data: fmt(r.data),
+            modulo: 'Mútuo',
+            desc: descCaixa,
+            valor: v,
+            cota: v,
+            formula: 'Individual (100%)',
+            tipo: tipoCaixa,
+            produtor: credor,
+            parceiro: devedor,
+            safra: 'Anual/Geral'
+          };
+
+          if (dentroData(r.data) && dentroFiltro(itemCaixa)) {
+            bi.recentes.push(itemCaixa);
+            if (tipoCaixa === 'Receita') bi.receitas += v;
+            else if (tipoCaixa === 'Despesa') bi.despesas += v;
+          }
         }
       }
     });
