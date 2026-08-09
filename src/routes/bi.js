@@ -334,10 +334,19 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
     };
 
     function dentroFiltro(r) {
-      if (socio && socio !== 'Todos' && r.produtor && !String(r.produtor).toLowerCase().includes(String(socio).toLowerCase())) {
-        if (!String(r.produtor).toLowerCase().match(/\b(geral|todos|holding)\b/)) {
-          if (r.modulo !== 'Mútuo' && r.parceiro && !String(r.parceiro).toLowerCase().includes(String(socio).toLowerCase())) {
-            return false;
+      if (socio && socio !== 'Todos' && r.produtor) {
+        const pStr = String(r.produtor).toLowerCase();
+        const sStr = String(socio).toLowerCase();
+        if (!pStr.includes(sStr) && !sStr.includes(pStr)) {
+          if (!pStr.match(/\b(geral|todos|holding)\b/)) {
+            if (r.modulo === 'Mútuo' && r.parceiro) {
+              const parcStr = String(r.parceiro).toLowerCase();
+              if (!parcStr.includes(sStr) && !sStr.includes(parcStr)) {
+                return false;
+              }
+            } else {
+              return false;
+            }
           }
         }
       }
@@ -534,7 +543,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Mútuo entre sócios (Regra Corrigida: Consolidado Neutro) ===
+    // === Mútuo entre sócios (REGRA CORRIGIDA: SEMPRE INDIVIDUAL 100% E HISTÓRICO DIRETO) ===
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -544,24 +553,17 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       const descMutuo = r.desc || r.descricao || '';
       const isDevolucao = descMutuo.toLowerCase().includes('devolu') || descMutuo.toLowerCase().includes('reembolso') || statusMutuo.toLowerCase().includes('liquida');
 
-      const sociosAtivos = obterSociosVinculados(credor, bi.sociosConfig);
-      const sociosDevedor = obterSociosVinculados(devedor, bi.sociosConfig);
-      const todosVinculados = [...sociosAtivos, ...sociosDevedor.filter(d => !sociosAtivos.find(s => s.nome === d.nome))];
-
-      let formulaStr = '';
-      if (todosVinculados.length > 1 || String(credor).toLowerCase().match(/\b(geral|todos|holding)\b/)) {
-        formulaStr = `Compartilhado (${todosVinculados.map(s => {
-          const nomeCurto = s.nome.split(' ')[1] || s.nome;
-          const pct = ((s.quota || s.participacao || 0) * 100).toFixed(0);
-          return `${nomeCurto}: ${pct}%`;
-        }).join(' + ')})`;
-      } else {
-        formulaStr = 'Individual (100%)';
-      }
-
+      // Mútuo NUNCA é compartilhado entre sócios — é sempre Individual 100%!
+      const formulaStr = 'Individual (100%)';
       let tipoMutuo = 'Mútuo';
-      let descFinal = `MÚTUO: Repasse ${credor} → ${devedor} (${statusMutuo})`;
+      let descFinal = '';
       let cotaMutuo = v;
+
+      if (isDevolucao) {
+        descFinal = `MÚTUO: Devolução/Liquidação ${devedor} → ${credor} (${statusMutuo})`;
+      } else {
+        descFinal = `MÚTUO: Empréstimo Concedido ${credor} → ${devedor} (${statusMutuo})`;
+      }
 
       if (socio && socio !== 'Todos') {
         const socioNorm = String(socio).toLowerCase();
@@ -570,15 +572,9 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
 
         if (isCredor) {
           tipoMutuo = isDevolucao ? 'Receita' : 'Despesa';
-          descFinal = isDevolucao
-            ? `MÚTUO: Devolução Recebida de ${devedor} (${statusMutuo})`
-            : `MÚTUO: Empréstimo Concedido para ${devedor} (${statusMutuo})`;
           cotaMutuo = v;
         } else if (isDevedor) {
           tipoMutuo = isDevolucao ? 'Despesa' : 'Receita';
-          descFinal = isDevolucao
-            ? `MÚTUO: Devolução Paga para ${credor} (${statusMutuo})`
-            : `MÚTUO: Empréstimo Recebido de ${credor} (${statusMutuo})`;
           cotaMutuo = v;
         } else {
           cotaMutuo = 0;
@@ -586,7 +582,6 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
         }
       } else {
         tipoMutuo = 'Mútuo';
-        descFinal = `MÚTUO: Repasse ${credor} → ${devedor} (${statusMutuo})`;
         cotaMutuo = v;
       }
 
@@ -600,7 +595,6 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
 
       if (dentroData(r.data) && dentroFiltro(item)) {
         bi.recentes.push(item);
-        // O mútuo entra na auditoria visual, mas NÃO afeta as despesas operacionais da Holding/Consolidado!
       }
     });
 
