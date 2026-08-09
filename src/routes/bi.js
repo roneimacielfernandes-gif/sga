@@ -167,7 +167,6 @@ router.get('/dashboard', exigirLogin, async (req, res) => {
       const credor = r.socio_credor;
       const devedor = r.socio_devedor;
 
-      // Lógica Contábil Direta: Quem paga (credor) soma (+v), quem recebe (devedor) subtrai (-v)
       if (bi.saldosMutuo[credor] !== undefined) bi.saldosMutuo[credor] += v;
       if (bi.saldosMutuo[devedor] !== undefined) bi.saldosMutuo[devedor] -= v;
 
@@ -552,8 +551,6 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       const statusLower = statusMutuo.toLowerCase();
       const isDevolucao = descLower.includes('devolu') || descLower.includes('reembolso') || descLower.includes('pago') || descLower.includes('pagamento') || statusLower.includes('liquida');
 
-      // Lógica Contábil Direta para saldos:
-      // Qualquer valor transferido pelo Credor adiciona no seu crédito (+v) e diminui no débito do Devedor (-v)
       if (bi.saldosMutuo[credor] === undefined) bi.saldosMutuo[credor] = 0;
       if (bi.saldosMutuo[devedor] === undefined) bi.saldosMutuo[devedor] = 0;
 
