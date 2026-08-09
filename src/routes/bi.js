@@ -543,7 +543,7 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       }
     });
 
-    // === Mútuo entre sócios (REGRA CORRIGIDA: SEMPRE INDIVIDUAL 100% E HISTÓRICO DIRETO) ===
+    // === Mútuo entre sócios (REGRA DEFINITIVA: COTA ZERO NO CONSOLIDADO GERAL) ===
     const mutuo = await pool.query('SELECT * FROM reg_mutuo_financeiro');
     mutuo.rows.forEach(r => {
       const v = parseFloat(r.valor) || 0;
@@ -553,11 +553,10 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
       const descMutuo = r.desc || r.descricao || '';
       const isDevolucao = descMutuo.toLowerCase().includes('devolu') || descMutuo.toLowerCase().includes('reembolso') || statusMutuo.toLowerCase().includes('liquida');
 
-      // Mútuo NUNCA é compartilhado entre sócios — é sempre Individual 100%!
-      const formulaStr = 'Individual (100%)';
+      let formulaStr = 'Repasse Inter-Sócios (0%)';
       let tipoMutuo = 'Mútuo';
       let descFinal = '';
-      let cotaMutuo = v;
+      let cotaMutuo = 0; // No Consolidado Geral (Holding) a cota atribuída é rigorosamente ZERO
 
       if (isDevolucao) {
         descFinal = `MÚTUO: Devolução/Liquidação ${devedor} → ${credor} (${statusMutuo})`;
@@ -572,23 +571,28 @@ router.get('/relatorio-pdf', exigirLogin, async (req, res) => {
 
         if (isCredor) {
           tipoMutuo = isDevolucao ? 'Receita' : 'Despesa';
+          formulaStr = 'Individual (100%)';
           cotaMutuo = v;
         } else if (isDevedor) {
           tipoMutuo = isDevolucao ? 'Despesa' : 'Receita';
+          formulaStr = 'Individual (100%)';
           cotaMutuo = v;
         } else {
+          formulaStr = 'Sem Vínculo (0%)';
           cotaMutuo = 0;
           tipoMutuo = 'Mútuo';
         }
       } else {
+        formulaStr = 'Repasse Inter-Sócios (0%)';
         tipoMutuo = 'Mútuo';
-        cotaMutuo = v;
+        cotaMutuo = 0;
       }
 
       const item = {
         data: fmt(r.data), modulo: 'Mútuo',
         desc: descFinal,
-        valor: v, cota: cotaMutuo,
+        valor: v,           // Valor Planilha: R$ 25.000,00
+        cota: cotaMutuo,    // Sua Cota R$: R$ 0,00 no Consolidado!
         formula: formulaStr,
         tipo: tipoMutuo, produtor: credor, parceiro: devedor, safra: 'Anual/Geral'
       };
